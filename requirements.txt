@@ -1,0 +1,9 @@
+fastapi
+httpx
+tenacity
+sqlalchemy
+psycopg2-binary
+prometheus-client
+pybreaker
+pydantic
+uvicorn
