@@ -80,10 +80,13 @@ class ProviderRouter:
             return self.configs[preferred_provider]
 
         normalized = model.lower()
-        for config in self.configs.values():
-            if any(normalized.startswith(prefix) for prefix in config.model_prefixes):
-                return config
-        raise ProviderError(f"No provider configured for model: {model}")
+        # Policy-based routing: match model prefix, then select by lowest cost
+        matches = [
+            c for c in self.configs.values() if any(normalized.startswith(p) for p in c.model_prefixes)
+        ]
+        if not matches:
+            raise ProviderError(f"No provider supports model: {model}")
+        return min(matches, key=lambda c: c.cost_per_million_input + c.cost_per_million_output)
 
     def client(self, provider: str) -> httpx.AsyncClient:
         try:
