@@ -78,12 +78,36 @@ class ProviderRouter:
             if preferred_provider not in self.configs:
                 raise ProviderError(f"Unknown provider: {preferred_provider}")
             return self.configs[preferred_provider]
+        # Policy-based routing: match model prefix, then select by lowest cost
+        matches = [c for c in self.configs.values() if any(model.startswith(p) for p in c.model_prefixes)]
+        if not matches:
+            raise ProviderError(f"No provider supports model: {model}")
+        return min(matches, key=lambda c: c.cost_per_million_input + c.cost_per_million_output)
 
-        normalized = model.lower()
-        for config in self.configs.values():
-            if any(normalized.startswith(prefix) for prefix in config.model_prefixes):
-                return config
-        raise ProviderError(f"No provider configured for model: {model}")
+    def health_check(self) -> dict[str, bool]:
+        """Check health of all configured providers."""
+        results = {}
+        for name, config in self.configs.items():
+            try:
+                client = self.clients[name]
+                # Simple health check: verify client is initialized
+                results[name] = client is not None
+            except Exception:
+                results[name] = False
+        return results
+
+    def get_provider_stats(self) -> dict[str, Any]:
+        """Return statistics for all providers."""
+        stats = {}
+        for name, config in self.configs.items():
+            stats[name] = {
+                "base_url": config.base_url,
+                "timeout": config.timeout,
+                "cost_input": config.cost_per_million_input,
+                "cost_output": config.cost_per_million_output,
+                "prefixes": list(config.model_prefixes),
+            }
+        return stats
 
     def client(self, provider: str) -> httpx.AsyncClient:
         try:
