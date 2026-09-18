@@ -91,4 +91,13 @@ async def route_llm(request: Request, payload: LLMRequest) -> LLMResponse:
     )
 
 
-app.include_router(router)
+@router.get("/providers/health")
+async def provider_health() -> dict[str, Any]:
+    stats = provider_router.get_provider_stats()
+    health = provider_router.health_check()
+    return {"providers": stats, "health": health, "status": "ok" if all(health.values()) else "degraded"}
+
+
+@router.get("/providers/stats")
+async def provider_stats() -> dict[str, Any]:
+    return {"stats": provider_router.get_provider_stats(), "status": "ok"}
