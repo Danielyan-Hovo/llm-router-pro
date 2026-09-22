@@ -1144,3 +1144,49 @@ class GatewayDeploymentConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"env": self.env, "replicas": self.replicas, "region": self.region, "features": self.features.copy()}
+
+ c l a s s   G a t e w a y C o n n e c t i o n P o o l : 
+         d e f   _ _ i n i t _ _ ( s e l f ,   m a x _ s i z e = 5 0 ,   i d l e _ t i m e o u t = 3 0 0 . 0 ) : 
+                 s e l f . m a x _ s i z e   =   m a x _ s i z e 
+                 s e l f . i d l e _ t i m e o u t   =   i d l e _ t i m e o u t 
+                 s e l f . _ p o o l   =   [ ] 
+                 s e l f . _ i n _ u s e   =   s e t ( ) 
+                 s e l f . _ s t a t s   =   { \  
+ c r e a t e d \ :   0 ,   \ r e u s e d \ :   0 ,   \ d e s t r o y e d \ :   0 ,   \ a c t i v e \ :   0 } 
+ 
+         d e f   a c q u i r e ( s e l f ,   c o n n e c t i o n _ i d ) : 
+                 n o w   =   t i m e . t i m e ( ) 
+                 a v a i l a b l e   =   [ c   f o r   c   i n   s e l f . _ p o o l   i f   c [ \ i d \ ]   n o t   i n   s e l f . _ i n _ u s e   a n d   ( n o w   -   c . g e t ( \ l a s t _ u s e d \ ,   0 ) )   <   s e l f . i d l e _ t i m e o u t ] 
+                 i f   a v a i l a b l e : 
+                         c o n n   =   a v a i l a b l e [ 0 ] 
+                         c o n n [ \ l a s t _ u s e d \ ]   =   n o w 
+                         s e l f . _ i n _ u s e . a d d ( c o n n [ \ i d \ ] ) 
+                         s e l f . _ s t a t s [ \ r e u s e d \ ]   + =   1 
+                         r e t u r n   c o n n 
+                 i f   l e n ( s e l f . _ p o o l )   +   l e n ( s e l f . _ i n _ u s e )   <   s e l f . m a x _ s i z e : 
+                         c o n n   =   { \ i d \ :   c o n n e c t i o n _ i d ,   \ c r e a t e d _ a t \ :   n o w ,   \ l a s t _ u s e d \ :   n o w ,   \ s t a t u s \ :   \ a c t i v e \ } 
+                         s e l f . _ p o o l . a p p e n d ( c o n n ) 
+                         s e l f . _ i n _ u s e . a d d ( c o n n e c t i o n _ i d ) 
+                         s e l f . _ s t a t s [ \ c r e a t e d \ ]   + =   1 
+                         r e t u r n   c o n n 
+                 r e t u r n   N o n e 
+ 
+         d e f   r e l e a s e ( s e l f ,   c o n n e c t i o n _ i d ) : 
+                 s e l f . _ i n _ u s e . d i s c a r d ( c o n n e c t i o n _ i d ) 
+                 f o r   c o n n   i n   s e l f . _ p o o l : 
+                         i f   c o n n [ \ i d \ ]   = =   c o n n e c t i o n _ i d : 
+                                 c o n n [ \ l a s t _ u s e d \ ]   =   t i m e . t i m e ( ) 
+                                 c o n n [ \ s t a t u s \ ]   =   \ i d l e \ 
+ 
+         d e f   c l e a n u p ( s e l f ) : 
+                 n o w   =   t i m e . t i m e ( ) 
+                 t o _ r e m o v e   =   [ c   f o r   c   i n   s e l f . _ p o o l   i f   ( n o w   -   c . g e t ( \ l a s t _ u s e d \ ,   0 ) )   >   s e l f . i d l e _ t i m e o u t   a n d   c [ \ i d \ ]   n o t   i n   s e l f . _ i n _ u s e ] 
+                 f o r   c   i n   t o _ r e m o v e : 
+                         s e l f . _ p o o l . r e m o v e ( c ) 
+                         s e l f . _ s t a t s [ \ d e s t r o y e d \ ]   + =   1 
+                 r e t u r n   l e n ( t o _ r e m o v e ) 
+ 
+         d e f   s t a t s ( s e l f ) : 
+                 r e t u r n   { \ m a x _ s i z e \ :   s e l f . m a x _ s i z e ,   \ p o o l _ s i z e \ :   l e n ( s e l f . _ p o o l ) ,   \ i n _ u s e \ :   l e n ( s e l f . _ i n _ u s e ) ,   \ a v a i l a b l e \ :   l e n ( s e l f . _ p o o l )   -   l e n ( s e l f . _ i n _ u s e ) ,   * * s e l f . _ s t a t s } 
+  
+ 
