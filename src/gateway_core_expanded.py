@@ -1190,3 +1190,23 @@ class GatewayDeploymentConfig:
                  r e t u r n   { \ m a x _ s i z e \ :   s e l f . m a x _ s i z e ,   \ p o o l _ s i z e \ :   l e n ( s e l f . _ p o o l ) ,   \ i n _ u s e \ :   l e n ( s e l f . _ i n _ u s e ) ,   \ a v a i l a b l e \ :   l e n ( s e l f . _ p o o l )   -   l e n ( s e l f . _ i n _ u s e ) ,   * * s e l f . _ s t a t s } 
   
  
+
+class GatewayRateLimitPolicy:
+    def __init__(self, requests_per_minute=60, burst_limit=10):
+        self.requests_per_minute = requests_per_minute
+        self.burst_limit = burst_limit
+        self._buckets = {}
+
+    def is_allowed(self, key):
+        import time
+        now = time.time()
+        window_start = now - 60.0
+        if key not in self._buckets:
+            self._buckets[key] = []
+        self._buckets[key] = [t for t in self._buckets[key] if t > window_start]
+        if len(self._buckets[key]) >= self.requests_per_minute:
+            return False
+        if len(self._buckets[key]) >= self.burst_limit:
+            return False
+        self._buckets[key].append(now)
+        return True
