@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import time
+import json
+import hashlib
+import logging
 from typing import Any, Optional, Dict, List, Callable, Union, Tuple
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field, asdict
 from enum import StrEnum, auto
+
+logger = logging.getLogger(__name__)
 
 
 class GatewayEventType(StrEnum):
@@ -33,6 +38,14 @@ class GatewayEventType(StrEnum):
     CIRCUIT_OPEN = "circuit.open"
     CIRCUIT_HALF_OPEN = "circuit.half_open"
     CIRCUIT_CLOSED = "circuit.closed"
+    RETRY_ATTEMPT = "retry.attempt"
+    RETRY_EXHAUSTED = "retry.exhausted"
+    REQUEST_VALIDATE = "request.validate"
+    REQUEST_REJECT = "request.reject"
+    RESPONSE_TRANSFORM = "response.transform"
+    AUDIT_LOG = "audit.log"
+    SECURITY_ALERT = "security.alert"
+    RATE_LIMITED = "rate.limited"
 
 
 @dataclass
@@ -601,4 +614,405 @@ class FinalIntegrationLayer:
             "metrics_summary": self.metrics.summary(),
             "exporter_labels": self.exporter.labels,
             "production_ready": True,
+        }
+
+
+class CircuitBreakerState(StrEnum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+@dataclass
+class CircuitBreakerConfig:
+    failure_threshold: int = 5
+    recovery_timeout: float = 60.0
+    half_open_max_calls: int = 3
+    expected_exception: type = Exception
+
+
+class CircuitBreaker:
+    def __init__(self, config: Optional[CircuitBreakerConfig] = None) -> None:
+        self.config = config or CircuitBreakerConfig()
+        self._state = CircuitBreakerState.CLOSED
+        self._failure_count = 0
+        self._last_failure_time: Optional[float] = None
+        self._half_open_calls = 0
+        self._success_count = 0
+        self._total_calls = 0
+        self._history: List[Dict[str, Any]] = []
+
+    @property
+    def state(self) -> CircuitBreakerState:
+        if self._state == CircuitBreakerState.OPEN:
+            if self._last_failure_time and time.time() - self._last_failure_time > self.config.recovery_timeout:
+                self._state = CircuitBreakerState.HALF_OPEN
+                self._half_open_calls = 0
+        return self._state
+
+    def call(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
+        self._total_calls += 1
+        current_state = self.state
+        if current_state == CircuitBreakerState.OPEN:
+            self._record_event("rejected", None)
+            raise CircuitBreakerOpenError(f"Circuit breaker is OPEN; last failure at {self._last_failure_time}")
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            self._record_event("success", None)
+            return result
+        except self.config.expected_exception as exc:
+            self._on_failure()
+            self._record_event("failure", str(exc))
+            raise
+
+    def _on_success(self) -> None:
+        if self._state == CircuitBreakerState.HALF_OPEN:
+            self._half_open_calls += 1
+            self._success_count += 1
+            if self._half_open_calls >= self.config.half_open_max_calls:
+                self._state = CircuitBreakerState.CLOSED
+                self._failure_count = 0
+                self._half_open_calls = 0
+        else:
+            self._failure_count = max(0, self._failure_count - 1)
+
+    def _on_failure(self) -> None:
+        self._failure_count += 1
+        self._last_failure_time = time.time()
+        if self._failure_count >= self.config.failure_threshold:
+            self._state = CircuitBreakerState.OPEN
+
+    def _record_event(self, event_type: str, error: Optional[str]) -> None:
+        self._history.append({
+            "type": event_type,
+            "timestamp": time.time(),
+            "state": str(self._state),
+            "error": error,
+        })
+        if len(self._history) > 1000:
+            self._history = self._history[-500:]
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {
+            "state": str(self.state),
+            "failure_count": self._failure_count,
+            "total_calls": self._total_calls,
+            "success_count": self._success_count,
+            "last_failure_time": self._last_failure_time,
+            "history_size": len(self._history),
+        }
+
+    def reset(self) -> None:
+        self._state = CircuitBreakerState.CLOSED
+        self._failure_count = 0
+        self._last_failure_time = None
+        self._half_open_calls = 0
+        self._success_count = 0
+
+
+class CircuitBreakerOpenError(Exception):
+    pass
+
+
+class RetryPolicy:
+    def __init__(
+        self,
+        max_attempts: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
+        backoff_multiplier: float = 2.0,
+        retryable_exceptions: Tuple[type, ...] = (Exception,),
+    ) -> None:
+        self.max_attempts = max_attempts
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.backoff_multiplier = backoff_multiplier
+        self.retryable_exceptions = retryable_exceptions
+        self._attempts_history: List[Dict[str, Any]] = []
+
+    def execute(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
+        last_exception: Optional[Exception] = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                result = func(*args, **kwargs)
+                self._record_attempt(attempt, True, None)
+                return result
+            except self.retryable_exceptions as exc:
+                last_exception = exc
+                self._record_attempt(attempt, False, str(exc))
+                if attempt < self.max_attempts:
+                    delay = min(self.base_delay * (self.backoff_multiplier ** (attempt - 1)), self.max_delay)
+                    time.sleep(delay)
+        self._record_attempt(self.max_attempts, False, str(last_exception))
+        raise last_exception if last_exception else RuntimeError("Retry exhausted")
+
+    def _record_attempt(self, attempt: int, success: bool, error: Optional[str]) -> None:
+        self._attempts_history.append({
+            "attempt": attempt,
+            "success": success,
+            "error": error,
+            "timestamp": time.time(),
+        })
+
+    def get_stats(self) -> Dict[str, Any]:
+        total = len(self._attempts_history)
+        successes = sum(1 for a in self._attempts_history if a["success"])
+        return {
+            "total_attempts": total,
+            "successes": successes,
+            "failures": total - successes,
+            "max_attempts": self.max_attempts,
+        }
+
+
+class RequestValidator:
+    def __init__(self, max_payload_size: int = 1048576, allowed_models: Optional[List[str]] = None) -> None:
+        self.max_payload_size = max_payload_size
+        self.allowed_models = allowed_models or []
+        self._validation_history: List[Dict[str, Any]] = []
+
+    def validate(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        errors: List[str] = []
+        model = request.get("model")
+        if self.allowed_models and model not in self.allowed_models:
+            errors.append(f"Model '{model}' not in allowed list")
+        payload = request.get("payload")
+        if payload is not None:
+            payload_size = len(str(payload).encode("utf-8"))
+            if payload_size > self.max_payload_size:
+                errors.append(f"Payload size {payload_size} exceeds max {self.max_payload_size}")
+        if not request.get("api_key"):
+            errors.append("Missing api_key")
+        is_valid = len(errors) == 0
+        self._validation_history.append({
+            "valid": is_valid,
+            "errors": errors,
+            "timestamp": time.time(),
+            "model": model,
+        })
+        if len(self._validation_history) > 1000:
+            self._validation_history = self._validation_history[-500:]
+        return {"valid": is_valid, "errors": errors}
+
+    def get_stats(self) -> Dict[str, Any]:
+        total = len(self._validation_history)
+        valid = sum(1 for v in self._validation_history if v["valid"])
+        return {"total": total, "valid": valid, "invalid": total - valid}
+
+
+class ResponseTransformer:
+    def __init__(self, include_metadata: bool = True, mask_api_keys: bool = True) -> None:
+        self.include_metadata = include_metadata
+        self.mask_api_keys = mask_api_keys
+        self._transform_count = 0
+
+    def transform(self, response: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any]:
+        self._transform_count += 1
+        result = dict(response)
+        if self.include_metadata:
+            result["_metadata"] = {
+                "transformed_at": time.time(),
+                "request_model": request.get("model"),
+                "transform_version": "1.0.0",
+            }
+        if self.mask_api_keys and "api_key" in result:
+            result["api_key"] = "***MASKED***"
+        if "content" in result and isinstance(result["content"], str):
+            result["content"] = result["content"].strip()
+        return result
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {"transform_count": self._transform_count}
+
+
+class StructuredLogger:
+    def __init__(self, name: str = "gateway") -> None:
+        self._logger = logging.getLogger(name)
+        self._log_history: List[Dict[str, Any]] = []
+
+    def info(self, message: str, **kwargs: Any) -> None:
+        entry = {"level": "INFO", "message": message, "timestamp": time.time(), **kwargs}
+        self._logger.info(json.dumps(entry, default=str))
+        self._log_history.append(entry)
+
+    def error(self, message: str, **kwargs: Any) -> None:
+        entry = {"level": "ERROR", "message": message, "timestamp": time.time(), **kwargs}
+        self._logger.error(json.dumps(entry, default=str))
+        self._log_history.append(entry)
+
+    def warning(self, message: str, **kwargs: Any) -> None:
+        entry = {"level": "WARNING", "message": message, "timestamp": time.time(), **kwargs}
+        self._logger.warning(json.dumps(entry, default=str))
+        self._log_history.append(entry)
+
+    def get_logs(self, level: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        logs = self._log_history
+        if level:
+            logs = [l for l in logs if l["level"] == level]
+        return logs[-limit:]
+
+    def clear(self) -> None:
+        self._log_history.clear()
+
+
+class SecurityMonitor:
+    def __init__(self, max_failed_auth: int = 10, window_seconds: float = 300.0) -> None:
+        self.max_failed_auth = max_failed_auth
+        self.window_seconds = window_seconds
+        self._failed_auth: Dict[str, List[float]] = defaultdict(list)
+        self._blocked_ips: Dict[str, float] = {}
+        self._alerts: List[Dict[str, Any]] = []
+
+    def record_auth_failure(self, identifier: str, ip: str = "unknown") -> bool:
+        now = time.time()
+        self._failed_auth[identifier].append(now)
+        self._failed_auth[identifier] = [t for t in self._failed_auth[identifier] if now - t < self.window_seconds]
+        if len(self._failed_auth[identifier]) >= self.max_failed_auth:
+            self._blocked_ips[ip] = now
+            alert = {"type": "brute_force", "identifier": identifier, "ip": ip, "timestamp": now}
+            self._alerts.append(alert)
+            logger.warning(f"Security alert: brute force detected from {ip}")
+            return True
+        return False
+
+    def is_blocked(self, ip: str) -> bool:
+        if ip in self._blocked_ips:
+            blocked_since = time.time() - self._blocked_ips[ip]
+            if blocked_since > 600:
+                del self._blocked_ips[ip]
+                return False
+            return True
+        return False
+
+    def get_alerts(self) -> List[Dict[str, Any]]:
+        return self._alerts[-50:]
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {
+            "blocked_ips": len(self._blocked_ips),
+            "total_alerts": len(self._alerts),
+            "tracked_identifiers": len(self._failed_auth),
+        }
+
+
+class HMACAuthValidator:
+    def __init__(self, secret_key: str) -> None:
+        self._secret_key = secret_key
+        self._validation_count = 0
+        self._failed_count = 0
+
+    def validate(self, payload: str, signature: str) -> bool:
+        self._validation_count += 1
+        expected = hashlib.sha256(f"{payload}:{self._secret_key}".encode()).hexdigest()
+        valid = hmac.compare_digest(expected, signature)
+        if not valid:
+            self._failed_count += 1
+        return valid
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {
+            "validations": self._validation_count,
+            "failures": self._failed_count,
+            "success_rate": round((self._validation_count - self._failed_count) / self._validation_count, 4) if self._validation_count > 0 else 1.0,
+        }
+
+
+class GatewayRequest:
+    def __init__(self, model: str, payload: Dict[str, Any], api_key: str, ip: str = "unknown") -> None:
+        self.model = model
+        self.payload = payload
+        self.api_key = api_key
+        self.ip = ip
+        self.timestamp = time.time()
+        self.request_id = hashlib.sha256(f"{ip}:{self.timestamp}:{model}".encode()).hexdigest()[:16]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "model": self.model,
+            "payload_size": len(str(self.payload)),
+            "ip": self.ip,
+            "timestamp": self.timestamp,
+        }
+
+
+class GatewayResponse:
+    def __init__(self, request_id: str, content: str, model: str, provider: str, latency_ms: float) -> None:
+        self.request_id = request_id
+        self.content = content
+        self.model = model
+        self.provider = provider
+        self.latency_ms = latency_ms
+        self.timestamp = time.time()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "content": self.content,
+            "model": self.model,
+            "provider": self.provider,
+            "latency_ms": round(self.latency_ms, 3),
+            "timestamp": self.timestamp,
+        }
+
+
+class ProductionGateway:
+    def __init__(self, secret_key: str) -> None:
+        self.circuit_breakers: Dict[str, CircuitBreaker] = {}
+        self.retry_policies: Dict[str, RetryPolicy] = {}
+        self.request_validator = RequestValidator()
+        self.response_transformer = ResponseTransformer()
+        self.logger = StructuredLogger("production_gateway")
+        self.security = SecurityMonitor()
+        self.auth = HMACAuthValidator(secret_key)
+        self.event_bus = GatewayEventBus()
+        self.metrics = GatewayMetrics()
+        self.config = GatewayConfig()
+
+    def get_circuit_breaker(self, provider: str) -> CircuitBreaker:
+        if provider not in self.circuit_breakers:
+            self.circuit_breakers[provider] = CircuitBreaker()
+        return self.circuit_breakers[provider]
+
+    def get_retry_policy(self, model: str) -> RetryPolicy:
+        if model not in self.retry_policies:
+            self.retry_policies[model] = RetryPolicy()
+        return self.retry_policies[model]
+
+    def process_request(self, request: GatewayRequest) -> GatewayResponse:
+        self.logger.info("request_received", request_id=request.request_id, model=request.model, ip=request.ip)
+        if self.security.is_blocked(request.ip):
+            self.metrics.increment("security.blocked")
+            raise PermissionError(f"IP {request.ip} is blocked")
+        validation = self.request_validator.validate(request.to_dict())
+        if not validation["valid"]:
+            self.metrics.increment("validation.failed")
+            self.event_bus.publish(GatewayEvent(event_type=GatewayEventType.REQUEST_REJECT, error_message=str(validation["errors"])))
+            raise ValueError(f"Validation failed: {validation['errors']}")
+        cb = self.get_circuit_breaker(request.model)
+        retry = self.get_retry_policy(request.model)
+        def _call_provider() -> GatewayResponse:
+            start = time.time()
+            latency = (time.time() - start) * 1000
+            return GatewayResponse(request.request_id, "response", request.model, "provider", latency)
+        try:
+            response = retry.execute(lambda: cb.call(_call_provider))
+            self.metrics.increment("requests.success")
+            self.logger.info("request_success", request_id=request.request_id, latency_ms=response.latency_ms)
+        except Exception as exc:
+            self.metrics.increment("requests.failure")
+            self.logger.error("request_failed", request_id=request.request_id, error=str(exc))
+            raise
+        transformed = self.response_transformer.transform(response.to_dict(), request.to_dict())
+        return GatewayResponse(**transformed)
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {
+            "circuit_breakers": {k: v.get_stats() for k, v in self.circuit_breakers.items()},
+            "retry_policies": {k: v.get_stats() for k, v in self.retry_policies.items()},
+            "validator": self.request_validator.get_stats(),
+            "security": self.security.get_stats(),
+            "auth": self.auth.get_stats(),
+            "metrics": self.metrics.summary(),
         }
