@@ -1016,3 +1016,131 @@ class ProductionGateway:
             "auth": self.auth.get_stats(),
             "metrics": self.metrics.summary(),
         }
+
+
+class GatewayAuditTrail:
+    def __init__(self, max_entries: int = 5000) -> None:
+        self.max_entries = max_entries
+        self._trail: List[Dict[str, Any]] = []
+
+    def log(self, action: str, actor: str, resource: str, result: str, details: Optional[Dict[str, Any]] = None) -> None:
+        entry = {
+            "timestamp": time.time(),
+            "action": action,
+            "actor": actor,
+            "resource": resource,
+            "result": result,
+            "details": details or {},
+        }
+        self._trail.append(entry)
+        if len(self._trail) > self.max_entries:
+            self._trail = self._trail[-2500:]
+
+    def query(self, action: Optional[str] = None, actor: Optional[str] = None, resource: Optional[str] = None) -> List[Dict[str, Any]]:
+        results = self._trail
+        if action:
+            results = [r for r in results if r["action"] == action]
+        if actor:
+            results = [r for r in results if r["actor"] == actor]
+        if resource:
+            results = [r for r in results if r["resource"] == resource]
+        return results
+
+    def get_stats(self) -> Dict[str, Any]:
+        actions = defaultdict(int)
+        for entry in self._trail:
+            actions[entry["action"]] += 1
+        return {"total_entries": len(self._trail), "max_entries": self.max_entries, "action_counts": dict(actions)}
+
+    def clear(self) -> None:
+        self._trail.clear()
+
+
+class GatewayRateLimitPolicy:
+    def __init__(self, requests_per_minute: int = 60, burst_limit: int = 10) -> None:
+        self.requests_per_minute = requests_per_minute
+        self.burst_limit = burst_limit
+        self._buckets: Dict[str, List[float]] = defaultdict(list)
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.time()
+        window_start = now - 60.0
+        self._buckets[key] = [t for t in self._buckets.get(key, []) if t > window_start]
+        if len(self._buckets[key]) >= self.requests_per_minute:
+            return False
+        if len(self._buckets[key]) >= self.burst_limit:
+            return False
+        self._buckets[key].append(now)
+        return True
+
+    def remaining(self, key: str) -> int:
+        now = time.time()
+        window_start = now - 60.0
+        self._buckets[key] = [t for t in self._buckets.get(key, []) if t > window_start]
+        return max(0, self.requests_per_minute - len(self._buckets[key]))
+
+    def reset(self, key: str) -> None:
+        self._buckets.pop(key, None)
+
+
+class GatewayHealthCheck:
+    def __init__(self, endpoint: str, interval: float = 30.0, timeout: float = 5.0) -> None:
+        self.endpoint = endpoint
+        self.interval = interval
+        self.timeout = timeout
+        self._last_check: Optional[float] = None
+        self._last_result: Optional[bool] = None
+        self._history: List[bool] = []
+
+    def check(self) -> bool:
+        self._last_check = time.time()
+        try:
+            import urllib.request
+            with urllib.request.urlopen(self.endpoint, timeout=self.timeout) as resp:
+                result = resp.status == 200
+        except Exception:
+            result = False
+        self._last_result = result
+        self._history.append(result)
+        if len(self._history) > 100:
+            self._history = self._history[-50:]
+        return result
+
+    def is_healthy(self) -> bool:
+        if not self._history:
+            return False
+        return sum(self._history[-10:]) / min(len(self._history), 10) >= 0.8
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {
+            "endpoint": self.endpoint,
+            "last_check": self._last_check,
+            "last_result": self._last_result,
+            "healthy": self.is_healthy(),
+            "history_size": len(self._history),
+        }
+
+
+class GatewayDeploymentConfig:
+    def __init__(self, env: str = "production", replicas: int = 3, region: str = "us-east-1") -> None:
+        self.env = env
+        self.replicas = replicas
+        self.region = region
+        self.features: Dict[str, bool] = {"circuit_breaker": True, "retry": True, "audit": True, "security": True}
+        self._deployment_history: List[Dict[str, Any]] = []
+
+    def deploy(self, version: str) -> Dict[str, Any]:
+        result = {"version": version, "env": self.env, "replicas": self.replicas, "region": self.region, "status": "deployed", "timestamp": time.time()}
+        self._deployment_history.append(result)
+        return result
+
+    def rollback(self, version: str) -> Dict[str, Any]:
+        result = {"version": version, "env": self.env, "action": "rollback", "timestamp": time.time()}
+        self._deployment_history.append(result)
+        return result
+
+    def get_history(self) -> List[Dict[str, Any]]:
+        return self._deployment_history[-20:]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"env": self.env, "replicas": self.replicas, "region": self.region, "features": self.features.copy()}
