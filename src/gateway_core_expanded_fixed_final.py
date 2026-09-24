@@ -1145,164 +1145,7 @@ class GatewayDeploymentConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {"env": self.env, "replicas": self.replicas, "region": self.region, "features": self.features.copy()}
 
- c l a s s   G a t e w a y C o n n e c t i o n P o o l : 
-         d e f   _ _ i n i t _ _ ( s e l f ,   m a x _ s i z e = 5 0 ,   i d l e _ t i m e o u t = 3 0 0 . 0 ) : 
-                 s e l f . m a x _ s i z e   =   m a x _ s i z e 
-                 s e l f . i d l e _ t i m e o u t   =   i d l e _ t i m e o u t 
-                 s e l f . _ p o o l   =   [ ] 
-                 s e l f . _ i n _ u s e   =   s e t ( ) 
-                 s e l f . _ s t a t s   =   { \  
- c r e a t e d \ :   0 ,   \ r e u s e d \ :   0 ,   \ d e s t r o y e d \ :   0 ,   \ a c t i v e \ :   0 } 
- 
-         d e f   a c q u i r e ( s e l f ,   c o n n e c t i o n _ i d ) : 
-                 n o w   =   t i m e . t i m e ( ) 
-                 a v a i l a b l e   =   [ c   f o r   c   i n   s e l f . _ p o o l   i f   c [ \ i d \ ]   n o t   i n   s e l f . _ i n _ u s e   a n d   ( n o w   -   c . g e t ( \ l a s t _ u s e d \ ,   0 ) )   <   s e l f . i d l e _ t i m e o u t ] 
-                 i f   a v a i l a b l e : 
-                         c o n n   =   a v a i l a b l e [ 0 ] 
-                         c o n n [ \ l a s t _ u s e d \ ]   =   n o w 
-                         s e l f . _ i n _ u s e . a d d ( c o n n [ \ i d \ ] ) 
-                         s e l f . _ s t a t s [ \ r e u s e d \ ]   + =   1 
-                         r e t u r n   c o n n 
-                 i f   l e n ( s e l f . _ p o o l )   +   l e n ( s e l f . _ i n _ u s e )   <   s e l f . m a x _ s i z e : 
-                         c o n n   =   { \ i d \ :   c o n n e c t i o n _ i d ,   \ c r e a t e d _ a t \ :   n o w ,   \ l a s t _ u s e d \ :   n o w ,   \ s t a t u s \ :   \ a c t i v e \ } 
-                         s e l f . _ p o o l . a p p e n d ( c o n n ) 
-                         s e l f . _ i n _ u s e . a d d ( c o n n e c t i o n _ i d ) 
-                         s e l f . _ s t a t s [ \ c r e a t e d \ ]   + =   1 
-                         r e t u r n   c o n n 
-                 r e t u r n   N o n e 
- 
-         d e f   r e l e a s e ( s e l f ,   c o n n e c t i o n _ i d ) : 
-                 s e l f . _ i n _ u s e . d i s c a r d ( c o n n e c t i o n _ i d ) 
-                 f o r   c o n n   i n   s e l f . _ p o o l : 
-                         i f   c o n n [ \ i d \ ]   = =   c o n n e c t i o n _ i d : 
-                                 c o n n [ \ l a s t _ u s e d \ ]   =   t i m e . t i m e ( ) 
-                                 c o n n [ \ s t a t u s \ ]   =   \ i d l e \ 
- 
-         d e f   c l e a n u p ( s e l f ) : 
-                 n o w   =   t i m e . t i m e ( ) 
-                 t o _ r e m o v e   =   [ c   f o r   c   i n   s e l f . _ p o o l   i f   ( n o w   -   c . g e t ( \ l a s t _ u s e d \ ,   0 ) )   >   s e l f . i d l e _ t i m e o u t   a n d   c [ \ i d \ ]   n o t   i n   s e l f . _ i n _ u s e ] 
-                 f o r   c   i n   t o _ r e m o v e : 
-                         s e l f . _ p o o l . r e m o v e ( c ) 
-                         s e l f . _ s t a t s [ \ d e s t r o y e d \ ]   + =   1 
-                 r e t u r n   l e n ( t o _ r e m o v e ) 
- 
-         d e f   s t a t s ( s e l f ) : 
-                 r e t u r n   { \ m a x _ s i z e \ :   s e l f . m a x _ s i z e ,   \ p o o l _ s i z e \ :   l e n ( s e l f . _ p o o l ) ,   \ i n _ u s e \ :   l e n ( s e l f . _ i n _ u s e ) ,   \ a v a i l a b l e \ :   l e n ( s e l f . _ p o o l )   -   l e n ( s e l f . _ i n _ u s e ) ,   * * s e l f . _ s t a t s } 
-  
- 
-
-class GatewayRateLimitPolicy:
-    def __init__(self, requests_per_minute=60, burst_limit=10):
-        self.requests_per_minute = requests_per_minute
-        self.burst_limit = burst_limit
-        self._buckets = {}
-
-    def is_allowed(self, key):
-        import time
-        now = time.time()
-        window_start = now - 60.0
-        if key not in self._buckets:
-            self._buckets[key] = []
-        self._buckets[key] = [t for t in self._buckets[key] if t > window_start]
-        if len(self._buckets[key]) >= self.requests_per_minute:
-            return False
-        if len(self._buckets[key]) >= self.burst_limit:
-            return False
-        self._buckets[key].append(now)
-        return True
  
-  
- c l a s s   G a t e w a y A u d i t T r a i l :  
-         d e f   _ _ i n i t _ _ ( s e l f ,   m a x _ e n t r i e s = 5 0 0 0 ) :  
-                 s e l f . m a x _ e n t r i e s   =   m a x _ e n t r i e s  
-                 s e l f . _ t r a i l   =   [ ]  
-  
-         d e f   l o g ( s e l f ,   a c t i o n ,   a c t o r ,   r e s o u r c e ,   r e s u l t ,   d e t a i l s = N o n e ) :  
-                 i m p o r t   t i m e  
-                 e n t r y   =   { " t i m e s t a m p " :   t i m e . t i m e ( ) ,   " a c t i o n " :   a c t i o n ,   " a c t o r " :   a c t o r ,   " r e s o u r c e " :   r e s o u r c e ,   " r e s u l t " :   r e s u l t ,   " d e t a i l s " :   d e t a i l s   o r   { } }  
-                 s e l f . _ t r a i l . a p p e n d ( e n t r y )  
-                 i f   l e n ( s e l f . _ t r a i l )   >   s e l f . m a x _ e n t r i e s :  
-                         s e l f . _ t r a i l   =   s e l f . _ t r a i l [ - 2 5 0 0 : ]  
-  
-         d e f   q u e r y ( s e l f ,   a c t i o n = N o n e ,   a c t o r = N o n e ,   r e s o u r c e = N o n e ) :  
-                 r e s u l t s   =   s e l f . _ t r a i l  
-                 i f   a c t i o n :  
-                         r e s u l t s   =   [ r   f o r   r   i n   r e s u l t s   i f   r [ " a c t i o n " ]   = =   a c t i o n ]  
-                 i f   a c t o r :  
-                         r e s u l t s   =   [ r   f o r   r   i n   r e s u l t s   i f   r [ " a c t o r " ]   = =   a c t o r ]  
-                 i f   r e s o u r c e :  
-                         r e s u l t s   =   [ r   f o r   r   i n   r e s u l t s   i f   r [ " r e s o u r c e " ]   = =   r e s o u r c e ]  
-                 r e t u r n   r e s u l t s  
-  
-         d e f   g e t _ s t a t s ( s e l f ) :  
-                 f r o m   c o l l e c t i o n s   i m p o r t   d e f a u l t d i c t  
-                 a c t i o n s   =   d e f a u l t d i c t ( i n t )  
-                 f o r   e n t r y   i n   s e l f . _ t r a i l :  
-                         a c t i o n s [ e n t r y [ " a c t i o n " ] ]   + =   1  
-                 r e t u r n   { " t o t a l _ e n t r i e s " :   l e n ( s e l f . _ t r a i l ) ,   " m a x _ e n t r i e s " :   s e l f . m a x _ e n t r i e s ,   " a c t i o n _ c o u n t s " :   d i c t ( a c t i o n s ) }  
-  
-         d e f   c l e a r ( s e l f ) :  
-                 s e l f . _ t r a i l . c l e a r ( )  
-  
-  
- c l a s s   G a t e w a y H e a l t h C h e c k :  
-         d e f   _ _ i n i t _ _ ( s e l f ,   e n d p o i n t ,   i n t e r v a l = 3 0 . 0 ,   t i m e o u t = 5 . 0 ) :  
-                 s e l f . e n d p o i n t   =   e n d p o i n t  
-                 s e l f . i n t e r v a l   =   i n t e r v a l  
-                 s e l f . t i m e o u t   =   t i m e o u t  
-                 s e l f . _ l a s t _ c h e c k   =   N o n e  
-                 s e l f . _ l a s t _ r e s u l t   =   N o n e  
-                 s e l f . _ h i s t o r y   =   [ ]  
-  
-         d e f   c h e c k ( s e l f ) :  
-                 i m p o r t   t i m e ,   u r l l i b . r e q u e s t  
-                 s e l f . _ l a s t _ c h e c k   =   t i m e . t i m e ( )  
-                 t r y :  
-                         w i t h   u r l l i b . r e q u e s t . u r l o p e n ( s e l f . e n d p o i n t ,   t i m e o u t = s e l f . t i m e o u t )   a s   r e s p :  
-                                 r e s u l t   =   r e s p . s t a t u s   = =   2 0 0  
-                 e x c e p t   E x c e p t i o n :  
-                         r e s u l t   =   F a l s e  
-                 s e l f . _ l a s t _ r e s u l t   =   r e s u l t  
-                 s e l f . _ h i s t o r y . a p p e n d ( r e s u l t )  
-                 i f   l e n ( s e l f . _ h i s t o r y )   >   1 0 0 :  
-                         s e l f . _ h i s t o r y   =   s e l f . _ h i s t o r y [ - 5 0 : ]  
-                 r e t u r n   r e s u l t  
-  
-         d e f   i s _ h e a l t h y ( s e l f ) :  
-                 i f   n o t   s e l f . _ h i s t o r y :  
-                         r e t u r n   F a l s e  
-                 r e t u r n   s u m ( s e l f . _ h i s t o r y [ - 1 0 : ] )   /   m i n ( l e n ( s e l f . _ h i s t o r y ) ,   1 0 )   > =   0 . 8  
-  
-         d e f   g e t _ s t a t s ( s e l f ) :  
-                 r e t u r n   { " e n d p o i n t " :   s e l f . e n d p o i n t ,   " l a s t _ c h e c k " :   s e l f . _ l a s t _ c h e c k ,   " l a s t _ r e s u l t " :   s e l f . _ l a s t _ r e s u l t ,   " h e a l t h y " :   s e l f . i s _ h e a l t h y ( ) ,   " h i s t o r y _ s i z e " :   l e n ( s e l f . _ h i s t o r y ) }  
-  
-  
- c l a s s   G a t e w a y D e p l o y m e n t C o n f i g :  
-         d e f   _ _ i n i t _ _ ( s e l f ,   e n v = " p r o d u c t i o n " ,   r e p l i c a s = 3 ,   r e g i o n = " u s - e a s t - 1 " ) :  
-                 s e l f . e n v   =   e n v  
-                 s e l f . r e p l i c a s   =   r e p l i c a s  
-                 s e l f . r e g i o n   =   r e g i o n  
-                 s e l f . f e a t u r e s   =   { " c i r c u i t _ b r e a k e r " :   T r u e ,   " r e t r y " :   T r u e ,   " a u d i t " :   T r u e ,   " s e c u r i t y " :   T r u e }  
-                 s e l f . _ d e p l o y m e n t _ h i s t o r y   =   [ ]  
-  
-         d e f   d e p l o y ( s e l f ,   v e r s i o n ) :  
-                 i m p o r t   t i m e  
-                 r e s u l t   =   { " v e r s i o n " :   v e r s i o n ,   " e n v " :   s e l f . e n v ,   " r e p l i c a s " :   s e l f . r e p l i c a s ,   " r e g i o n " :   s e l f . r e g i o n ,   " s t a t u s " :   " d e p l o y e d " ,   " t i m e s t a m p " :   t i m e . t i m e ( ) }  
-                 s e l f . _ d e p l o y m e n t _ h i s t o r y . a p p e n d ( r e s u l t )  
-                 r e t u r n   r e s u l t  
-  
-         d e f   r o l l b a c k ( s e l f ,   v e r s i o n ) :  
-                 i m p o r t   t i m e  
-                 r e s u l t   =   { " v e r s i o n " :   v e r s i o n ,   " e n v " :   s e l f . e n v ,   " a c t i o n " :   " r o l l b a c k " ,   " t i m e s t a m p " :   t i m e . t i m e ( ) }  
-                 s e l f . _ d e p l o y m e n t _ h i s t o r y . a p p e n d ( r e s u l t )  
-                 r e t u r n   r e s u l t  
-  
-         d e f   g e t _ h i s t o r y ( s e l f ) :  
-                 r e t u r n   s e l f . _ d e p l o y m e n t _ h i s t o r y [ - 2 0 : ]  
-  
-         d e f   t o _ d i c t ( s e l f ) :  
-                 r e t u r n   { " e n v " :   s e l f . e n v ,   " r e p l i c a s " :   s e l f . r e p l i c a s ,   " r e g i o n " :   s e l f . r e g i o n ,   " f e a t u r e s " :   s e l f . f e a t u r e s . c o p y ( ) }  
-  
   
  c l a s s   G a t e w a y C o n n e c t i o n P o o l :  
          d e f   _ _ i n i t _ _ ( s e l f ,   m a x _ s i z e = 5 0 ,   i d l e _ t i m e o u t = 3 0 0 . 0 ) :  
@@ -1370,4 +1213,33 @@ class GatewayRateLimitPolicy:
   
          d e f   g e t _ h i s t o r y ( s e l f ,   l i m i t = 5 0 ) :  
                  r e t u r n   s e l f . _ r o u t i n g _ h i s t o r y [ - l i m i t : ]  
+  
+  
+ c l a s s   G a t e w a y L o a d B a l a n c e r A d v a n c e d :  
+         d e f   _ _ i n i t _ _ ( s e l f ,   s t r a t e g y = " r o u n d _ r o b i n " ) :  
+                 s e l f . s t r a t e g y   =   s t r a t e g y  
+                 f r o m   c o l l e c t i o n s   i m p o r t   d e f a u l t d i c t  
+                 s e l f . _ p r o v i d e r _ s t a t e s   =   d e f a u l t d i c t ( l a m b d a :   { " r e q u e s t s " :   0 ,   " e r r o r s " :   0 ,   " l a t e n c y _ s u m " :   0 . 0 } )  
+  
+         d e f   s e l e c t ( s e l f ,   p r o v i d e r s ) :  
+                 i f   n o t   p r o v i d e r s :  
+                         r e t u r n   N o n e  
+                 b e s t   =   m i n ( p r o v i d e r s ,   k e y = l a m b d a   p :   s e l f . _ p r o v i d e r _ s t a t e s [ p ] [ " r e q u e s t s " ] )  
+                 s e l f . _ p r o v i d e r _ s t a t e s [ b e s t ] [ " r e q u e s t s " ]   + =   1  
+                 r e t u r n   b e s t  
+  
+         d e f   r e c o r d _ r e s u l t ( s e l f ,   p r o v i d e r ,   s u c c e s s ,   l a t e n c y _ m s ) :  
+                 i f   n o t   s u c c e s s :  
+                         s e l f . _ p r o v i d e r _ s t a t e s [ p r o v i d e r ] [ " e r r o r s " ]   + =   1  
+                 s e l f . _ p r o v i d e r _ s t a t e s [ p r o v i d e r ] [ " l a t e n c y _ s u m " ]   + =   l a t e n c y _ m s  
+  
+         d e f   g e t _ s t a t s ( s e l f ) :  
+                 s t a t s   =   { }  
+                 f o r   p r o v i d e r ,   s t a t e   i n   s e l f . _ p r o v i d e r _ s t a t e s . i t e m s ( ) :  
+                         s t a t s [ p r o v i d e r ]   =   {  
+                                 " r e q u e s t s " :   s t a t e [ " r e q u e s t s " ] ,  
+                                 " e r r o r s " :   s t a t e [ " e r r o r s " ] ,  
+                                 " a v g _ l a t e n c y " :   r o u n d ( s t a t e [ " l a t e n c y _ s u m " ]   /   m a x ( s t a t e [ " r e q u e s t s " ] ,   1 ) ,   3 ) ,  
+                         }  
+                 r e t u r n   s t a t s  
  
